@@ -116,6 +116,7 @@ extern unsigned int
 OMAPCalculateStride(unsigned int fbWidth, unsigned int bitsPerPixel);
 extern unsigned int
 OMAPCalculateTiledStride(unsigned int width, unsigned int bitsPerPixel);
+unsigned int OMAPTiledFlags(unsigned int bitsPerPixel);
 
 
 
@@ -182,6 +183,16 @@ static inline Bool has_dmm(OMAPPtr pOMAP)
 	return pOMAP->chipset >= 0x4430;
 }
 
+static inline Bool has_rotation(OMAPPtr pOMAP)
+{
+#if XF86_CRTC_VERSION >= 4
+	// TODO .. should somehow check if driver has rotation property..
+	return has_dmm(pOMAP);
+#else
+	return FALSE;
+#endif
+}
+
 /** Return a pointer to the driver's private structure. */
 #define OMAPPTR(p) ((OMAPPtr)((p)->driverPrivate))
 #define OMAPPTR_FROM_SCREEN(pScreen) \
@@ -225,6 +236,8 @@ void drmmode_remove_fb(ScrnInfoPtr pScrn);
 Bool drmmode_page_flip(DrawablePtr pDraw, PixmapPtr back, void *priv);
 void drmmode_wait_for_event(ScrnInfoPtr pScrn);
 Bool drmmode_cursor_init(ScreenPtr pScreen);
+Bool drmmode_is_rotated(ScrnInfoPtr pScrn);
+Bool drmmode_reallocate_scanout(ScrnInfoPtr pScrn, Bool redraw);
 
 
 /**

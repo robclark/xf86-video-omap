@@ -125,6 +125,7 @@ draw2pix(DrawablePtr pDraw)
 typedef struct {
 	void *priv;			/* EXA submodule private data */
 	struct omap_bo *bo;
+	Bool tiled;
 } OMAPPixmapPrivRec, *OMAPPixmapPrivPtr;
 
 #define OMAP_CREATE_PIXMAP_SCANOUT 0x80000000
@@ -148,6 +149,13 @@ OMAPPixmapBo(PixmapPtr pPixmap)
 {
 	OMAPPixmapPrivPtr priv = exaGetPixmapDriverPrivate(pPixmap);
 	return priv->bo;
+}
+
+static inline Bool
+OMAPPixmapTiled(PixmapPtr pPixmap)
+{
+	OMAPPixmapPrivPtr priv = exaGetPixmapDriverPrivate(pPixmap);
+	return priv->tiled;
 }
 
 void OMAPPixmapExchange(PixmapPtr a, PixmapPtr b);

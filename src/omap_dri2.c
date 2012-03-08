@@ -195,10 +195,15 @@ exchangebufs(DrawablePtr pDraw, DRI2BufferPtr a, DRI2BufferPtr b)
 }
 
 static PixmapPtr
-createpix(DrawablePtr pDraw)
+createpix(DrawablePtr pDraw, Bool scanout)
 {
 	ScreenPtr pScreen = pDraw->pScreen;
-	int flags = canflip(pDraw) ? OMAP_CREATE_PIXMAP_SCANOUT : 0;
+	int flags = scanout ? OMAP_CREATE_PIXMAP_SCANOUT : 0;
+	if (scanout) {
+		ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+		Bool rotated = drmmode_is_rotated(pScrn);
+		flags |= rotated ? OMAP_CREATE_PIXMAP_TILED : 0;
+	}
 	return pScreen->CreatePixmap(pScreen,
 			pDraw->width, pDraw->height, pDraw->depth, flags);
 }
@@ -248,7 +253,7 @@ OMAPDRI2CreateBuffer(DrawablePtr pDraw, unsigned int attachment,
 				(OMAPPixmapBo(pPixmap) != pOMAP->scanout)) {
 
 			/* need to re-allocate pixmap to get a scanout capable buffer */
-			PixmapPtr pNewPix = createpix(pDraw);
+			PixmapPtr pNewPix = createpix(pDraw, TRUE);
 
 			// TODO copy contents..
 
@@ -259,7 +264,7 @@ OMAPDRI2CreateBuffer(DrawablePtr pDraw, unsigned int attachment,
 
 		pPixmap->refcnt++;
 	} else {
-		pPixmap = createpix(pDraw);
+		pPixmap = createpix(pDraw, canflip(pDraw));
 	}
 
 	bo = OMAPPixmapBo(pPixmap);
@@ -426,9 +431,12 @@ OMAPDRI2SwapDispatch(DrawablePtr pDraw, OMAPDRISwapCmd *cmd)
 	ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
 	OMAPDRI2DrawablePtr pPriv = OMAPDRI2GetDrawable(pDraw);
 	OMAPDRI2BufferPtr src = OMAPBUF(cmd->pSrcBuffer);
+	Bool ok_to_flip = drmmode_is_rotated(pScrn) ?
+			OMAPPixmapTiled(src->pPixmap) : TRUE;
 
 	/* if we can flip, do so: */
-	if (canflip(pDraw) && drmmode_page_flip(pDraw, src->pPixmap, cmd)) {
+	if (ok_to_flip && canflip(pDraw) &&
+			drmmode_page_flip(pDraw, src->pPixmap, cmd)) {
 		OMAPPTR(pScrn)->pending_page_flips++;
 		cmd->type = DRI2_FLIP_COMPLETE;
 	} else if (canexchange(pDraw, cmd->pSrcBuffer, cmd->pDstBuffer)) {

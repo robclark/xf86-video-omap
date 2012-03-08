@@ -163,8 +163,10 @@ OMAPModifyPixmapHeader(PixmapPtr pPixmap, int width, int height,
 		omap_bo_del(priv->bo);
 		if (flags & OMAP_BO_TILED) {
 			priv->bo = omap_bo_new_tiled(pOMAP->dev, width, height, flags);
+			priv->tiled = TRUE;
 		} else {
 			priv->bo = omap_bo_new(pOMAP->dev, size, flags);
+			priv->tiled = FALSE;
 		}
 	}
 

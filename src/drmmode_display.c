@@ -84,6 +84,7 @@
 #endif
 
 #include "omap_driver.h"
+#include "omap_drm.h"
 
 #include "xf86Crtc.h"
 
@@ -111,11 +112,16 @@ typedef struct {
 	struct udev_monitor *uevent_monitor;
 	InputHandlerProc uevent_handler;
 	drmmode_cursor_ptr cursor;
+	int rotated_crtcs;
 } drmmode_rec, *drmmode_ptr;
 
 typedef struct {
 	drmmode_ptr drmmode;
 	drmModeCrtcPtr mode_crtc;
+	Rotation rotation;
+
+	/* properties that we care about: */
+	uint32_t prop_rotation;
 } drmmode_crtc_private_rec, *drmmode_crtc_private_ptr;
 
 typedef struct {
@@ -215,6 +221,34 @@ drmmode_crtc_dpms(xf86CrtcPtr drmmode_crtc, int mode)
 	// FIXME - Implement this function
 }
 
+#define SUPPORTED_ROTATIONS (RR_Rotate_0 | RR_Rotate_90 | RR_Rotate_180 | RR_Rotate_270 | RR_Reflect_X | RR_Reflect_Y)
+
+static Bool
+drmmode_set_rotation(xf86CrtcPtr crtc, Rotation rotation)
+{
+#if XF86_CRTC_VERSION >= 4
+	ScrnInfoPtr pScrn = crtc->scrn;
+	drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+
+	if (!(rotation & ~SUPPORTED_ROTATIONS)) {
+		int ret;
+
+		ret = drmModeObjectSetProperty(drmmode_crtc->drmmode->fd,
+				drmmode_crtc->mode_crtc->crtc_id,
+				DRM_MODE_OBJECT_CRTC,
+				drmmode_crtc->prop_rotation,
+				rotation);
+		if (ret) {
+			ERROR_MSG("failed to set orientation %s", strerror(errno));
+			return FALSE;
+		}
+
+		crtc->driverIsPerformingTransform = TRUE;
+	}
+#endif
+	return xf86CrtcRotate(crtc);
+}
+
 static Bool
 drmmode_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 		Rotation rotation, int x, int y)
@@ -233,15 +267,48 @@ drmmode_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 	int i;
 	int fb_id;
 	drmModeModeInfo kmode;
+	Bool was_rotated = drmmode->rotated_crtcs > 0;
 
 	TRACE_ENTER();
 
 	/* remove old fb if it exists */
 	drmmode_remove_fb(pScrn);
 
+	/* update the count of number of rotated CRTCs.. if we have one or more
+	 * rotated outputs then we want to use a tiled buffer, but otherwise
+	 * stick with non-tiled
+	 */
+	if ((drmmode_crtc->rotation != RR_Rotate_0) &&
+			(rotation == RR_Rotate_0)) {
+		DEBUG_MSG("disabling rotation for crtc: %u",
+				drmmode_crtc->mode_crtc->crtc_id);
+		drmmode->rotated_crtcs--;
+	} else if ((drmmode_crtc->rotation == RR_Rotate_0) &&
+			(rotation != RR_Rotate_0)) {
+		DEBUG_MSG("enabling rotation for crtc: %u",
+				drmmode_crtc->mode_crtc->crtc_id);
+		drmmode->rotated_crtcs++;
+	}
+
+	drmmode_crtc->rotation = rotation;
+
+	/* at this point, if we are switching from unrotated to rotated
+	 * or visa versa, then we need to reallocate the scanout buffer..
+	 */
+	if (was_rotated != (drmmode->rotated_crtcs > 0)) {
+		/* reallocate scanout buffer.. */
+		drmmode_reallocate_scanout(pScrn, TRUE);
+	}
+
+	/* note: this needs to be done before setting the mode, otherwise
+	 * drm core will reject connecting the fb to crtc due to mismatched
+	 * dimensions:
+	 */
+	if (!drmmode_set_rotation(crtc, rotation))
+		goto done;
+
 	if (drmmode->fb_id == 0) {
-		unsigned int pitch =
-				OMAPCalculateStride(pScrn->virtualX, pScrn->bitsPerPixel);
+		unsigned int pitch = pScrn->displayWidth * (pScrn->bitsPerPixel / 8);
 
 		DEBUG_MSG("create framebuffer: %dx%d",
 				pScrn->virtualX, pScrn->virtualY);
@@ -290,9 +357,6 @@ drmmode_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 		output_count++;
 	}
 
-	if (!xf86CrtcRotate(crtc))
-		goto done;
-
 	// Fixme - Intel puts this function here, and Nouveau puts it at the end
 	// of this function -> determine what's best for TI'S OMAP4:
 	crtc->funcs->gamma_set(crtc, crtc->gamma_red, crtc->gamma_green,
@@ -333,7 +397,7 @@ done:
 		free(output_ids);
 	}
 	if (!ret) {
-		/* If there was a problem, resture the old mode: */
+		/* If there was a problem, restore the old mode: */
 		crtc->x = saved_x;
 		crtc->y = saved_y;
 		crtc->rotation = saved_rotation;
@@ -404,6 +468,15 @@ drmmode_show_cursor(xf86CrtcPtr crtc)
 	if ((crtc_y + h) > crtc->mode.VDisplay) {
 		h = crtc->mode.VDisplay - crtc_y;
 	}
+
+#if XF86_CRTC_VERSION >= 4
+	/* NOTE: driver is taking care of rotation in hw, which means
+	 * we need to deal w/ transformation of mouse cursor ourself:
+	 */
+	if (crtc->driverIsPerformingTransform) {
+		xf86CrtcTransformCursorPos(crtc, &crtc_x, &crtc_y);
+	}
+#endif
 
 	/* note src coords (last 4 args) are in Q16 format */
 	drmModeSetPlane(drmmode->fd, cursor->ovr->plane_id,
@@ -550,6 +623,7 @@ static const xf86CrtcFuncsRec drmmode_crtc_funcs = {
 static void
 drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int num)
 {
+	drmModeObjectPropertiesPtr props;
 	xf86CrtcPtr crtc;
 	drmmode_crtc_private_ptr drmmode_crtc;
 
@@ -563,8 +637,23 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int num)
 	drmmode_crtc->mode_crtc = drmModeGetCrtc(drmmode->fd,
 			drmmode->mode_res->crtcs[num]);
 	drmmode_crtc->drmmode = drmmode;
+	drmmode_crtc->rotation = RR_Rotate_0;
 
-	// FIXME - potentially add code to allocate a HW cursor here.
+	/* find properties that we care about: */
+	props = drmModeObjectGetProperties(drmmode->fd,
+			drmmode_crtc->mode_crtc->crtc_id, DRM_MODE_OBJECT_CRTC);
+	if (props) {
+		drmModePropertyPtr prop;
+		int i;
+		for (i = 0; i < props->count_props; i++) {
+			prop = drmModeGetProperty(drmmode->fd, props->props[i]);
+			if (!strcmp(prop->name, "rotation")) {
+				drmmode_crtc->prop_rotation = prop->prop_id;
+			}
+			drmModeFreeProperty(prop);
+		}
+		drmModeFreeObjectProperties(props);
+	}
 
 	crtc->driver_private = drmmode_crtc;
 
@@ -1016,55 +1105,98 @@ drmmode_output_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int num)
 	return;
 }
 
-static Bool
-drmmode_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
+Bool
+drmmode_is_rotated(ScrnInfoPtr pScrn)
+{
+	OMAPPtr pOMAP = OMAPPTR(pScrn);
+	drmmode_ptr drmmode = drmmode_from_scrn(pScrn);
+	return has_rotation(pOMAP) && drmmode->rotated_crtcs > 0;
+}
+
+Bool
+drmmode_reallocate_scanout(ScrnInfoPtr pScrn, Bool redraw)
 {
 	OMAPPtr pOMAP = OMAPPTR(pScrn);
 	ScreenPtr pScreen = pScrn->pScreen;
+	Bool changed = FALSE;
+	uint32_t flags = OMAP_BO_SCANOUT | OMAP_BO_WC;
+	int width = pScrn->virtualX;
+	int height = pScrn->virtualY;
 	unsigned int pitch;
+	Bool rotate = drmmode_is_rotated(pScrn);
 
-	TRACE_ENTER();
-
-	/* if fb required size has changed, realloc! */
-
-	DEBUG_MSG("Resize!  %dx%d", width, height);
-
-	pScrn->virtualX = width;
-	pScrn->virtualY = height;
-
-	pitch = OMAPCalculateStride(width, pScrn->bitsPerPixel);
-
-	if ((pitch * height) != omap_bo_size(pOMAP->scanout)) {
-		/* hmm, should we remove fb here.. we don't want to keep
-		 * scanning out a deallocated buffer..
+	if (rotate) {
+		/* if we are using tiled buffers, we really should check if
+		 * width/height has changed, rather than size.. for now, just
+		 * always re-alloc:
 		 */
-		drmmode_remove_fb(pScrn);
+		changed = TRUE;
+		pitch = OMAPCalculateTiledStride(width, pScrn->bitsPerPixel);
+	} else {
+		pitch = OMAPCalculateStride(width, pScrn->bitsPerPixel);
+	}
+
+	if (pOMAP->scanout) {
+		if ((pitch * height) != omap_bo_size(pOMAP->scanout)) {
+			changed = TRUE;
+		}
+	} else {
+		changed = TRUE;
+	}
+
+	if (changed) {
+		if (pScreen && pScrn->EnableDisableFBAccess && redraw)
+			pScrn->EnableDisableFBAccess(pScrn->scrnIndex, FALSE);
 
 		/* delete old scanout buffer */
 		omap_bo_del(pOMAP->scanout);
 
-		DEBUG_MSG("allocating new scanout buffer: %dx%d (%d)",
-				width, height, pitch);
+		if (rotate) {
+			DEBUG_MSG("allocating tiled scanout buffer: %dx%d (%d)",
+					width, height, pitch);
+			flags |= OMAPTiledFlags(pScrn->bitsPerPixel);
+			pOMAP->scanout = omap_bo_new_tiled(pOMAP->dev,
+					width, height, flags);
+		} else {
+			DEBUG_MSG("allocating linear scanout buffer: %dx%d (%d)",
+					width, height, pitch);
+			pOMAP->scanout = omap_bo_new(pOMAP->dev, height * pitch, flags);
+		}
 
-		/* allocate new scanout buffer */
-		pOMAP->scanout = omap_bo_new(pOMAP->dev, height * pitch,
-				OMAP_BO_SCANOUT | OMAP_BO_WC);
 		if (!pOMAP->scanout) {
 			xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
 					"Error reallocating scanout buffer\n");
 			return FALSE;
 		}
+
+		pScrn->displayWidth = pitch / (pScrn->bitsPerPixel / 8);
+
+		if (pScreen && pScreen->ModifyPixmapHeader) {
+			PixmapPtr rootPixmap = pScreen->GetScreenPixmap(pScreen);
+			pScreen->ModifyPixmapHeader(rootPixmap,
+					pScrn->virtualX, pScrn->virtualY,
+					pScrn->depth, pScrn->bitsPerPixel, pitch,
+					omap_bo_map(pOMAP->scanout));
+		}
+
+		if (pScreen && pScrn->EnableDisableFBAccess && redraw)
+			pScrn->EnableDisableFBAccess(pScrn->scrnIndex, TRUE);
 	}
 
-	if (pScreen && pScreen->ModifyPixmapHeader) {
-		PixmapPtr rootPixmap = pScreen->GetScreenPixmap(pScreen);
-		pScreen->ModifyPixmapHeader(rootPixmap,
-				pScrn->virtualX, pScrn->virtualY,
-				pScrn->depth, pScrn->bitsPerPixel, pitch,
-				omap_bo_map(pOMAP->scanout));
-	}
+	return TRUE;
+}
 
-	TRACE_EXIT();
+static Bool
+drmmode_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
+{
+	DEBUG_MSG("Resize!  %dx%d", width, height);
+
+	pScrn->virtualX = width;
+	pScrn->virtualY = height;
+
+	if (!drmmode_reallocate_scanout(pScrn, FALSE))
+		return FALSE;
+
 	return TRUE;
 }
 
@@ -1337,6 +1469,8 @@ drmmode_wakeup_handler(pointer data, int err, pointer p)
 
 	if (pScrn == NULL || err < 0)
 		return;
+
+	drmmode = drmmode_from_scrn(pScrn);
 
 	if (FD_ISSET(drmmode->fd, read_mask))
 		drmHandleEvent(drmmode->fd, &event_context);
