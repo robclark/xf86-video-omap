@@ -198,29 +198,21 @@ OMAPCalculateTiledStride(unsigned int width, unsigned int bitsPerPixel)
 	return stride;
 }
 
+unsigned int
+OMAPTiledFlags(unsigned int bitsPerPixel)
+{
+	switch(bitsPerPixel) {
+	case 32: return OMAP_BO_TILED_32;
+	case 16: return OMAP_BO_TILED_16;
+	case 8:  return OMAP_BO_TILED_8;
+	default: return 0;
+	}
+}
 
 static Bool
 OMAPMapMem(ScrnInfoPtr pScrn)
 {
-	OMAPPtr pOMAP = OMAPPTR(pScrn);
-	int pitch;
-
-	pitch = OMAPCalculateStride(pScrn->virtualX, pScrn->bitsPerPixel);
-
-	DEBUG_MSG("allocating new scanout buffer: %dx%d (%d)",
-			pScrn->virtualX, pScrn->virtualY, pitch);
-
-	pOMAP->scanout = omap_bo_new(pOMAP->dev, pScrn->virtualY * pitch,
-			OMAP_BO_SCANOUT | OMAP_BO_WC);
-	if (!pOMAP->scanout) {
-		xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
-			   "Error allocating scanout buffer\n");
-		return FALSE;
-	}
-
-	pScrn->displayWidth = pitch / (pScrn->bitsPerPixel / 8);
-
-	return TRUE;
+	return drmmode_reallocate_scanout(pScrn);
 }
 
 
@@ -816,6 +808,16 @@ OMAPScreenInit(int scrnIndex, ScreenPtr pScreen, int argc, char **argv)
 	if (!xf86CrtcScreenInit(pScreen)) {
 		ERROR_MSG("xf86CrtcScreenInit() failed!");
 		goto fail;
+	}
+
+	if (has_rotation(pOMAP)) {
+		xf86RandR12SetRotations(pScreen, RR_Rotate_0 | RR_Rotate_90 |
+				RR_Rotate_180 | RR_Rotate_270 | RR_Reflect_X | RR_Reflect_Y);
+	} else {
+#if XF86_CRTC_VERSION < 4
+		WARNING_MSG("rotation not supported by XF86_CRTC_VERSION version: %d",
+				XF86_CRTC_VERSION);
+#endif
 	}
 
 	if (!miCreateDefColormap(pScreen)) {
