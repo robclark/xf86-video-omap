@@ -469,12 +469,14 @@ drmmode_show_cursor(xf86CrtcPtr crtc)
 		h = crtc->mode.VDisplay - crtc_y;
 	}
 
+#if XF86_CRTC_VERSION >= 4
 	/* NOTE: driver is taking care of rotation in hw, which means
 	 * we need to deal w/ transformation of mouse cursor ourself:
 	 */
 	if (crtc->driverIsPerformingTransform) {
 		xf86CrtcTransformCursorPos(crtc, &crtc_x, &crtc_y);
 	}
+#endif
 
 	/* note src coords (last 4 args) are in Q16 format */
 	drmModeSetPlane(drmmode->fd, cursor->ovr->plane_id,
