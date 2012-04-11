@@ -1133,18 +1133,14 @@ drmmode_reallocate_scanout(ScrnInfoPtr pScrn)
 		if ((pitch * height) != omap_bo_size(pOMAP->scanout)) {
 			changed = TRUE;
 		}
-		if (changed) {
-			/* delete old scanout buffer */
-			omap_bo_del(pOMAP->scanout);
-		}
 	} else {
 		changed = TRUE;
 	}
 
 	if (changed) {
-		/* we don't know yet if user wants rotation.. so if rotation
-		 * is supported we need to go ahead and allocate tiled buffer:
-		 */
+		/* delete old scanout buffer */
+		omap_bo_del(pOMAP->scanout);
+
 		if (rotate) {
 			DEBUG_MSG("allocating tiled scanout buffer: %dx%d (%d)",
 					width, height, pitch);

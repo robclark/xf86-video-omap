@@ -152,7 +152,8 @@ OMAPDRI2CreateBuffer(DrawablePtr pDraw, unsigned int attachment,
 		 * TODO we may need to re-allocate and switch back to non-scanout
 		 * buffer when client disconnects from drawable..
 		 */
-		if (canflip(pDraw)) {
+		if (canflip(pDraw) && !(has_dmm(pOMAP) ||
+				(OMAPPixmapBo(pPixmap) == pOMAP->scanout))) {
 			/* need to re-allocate pixmap to get a scanout capable buffer */
 			PixmapPtr pNewPix = createpix(pDraw);
 
