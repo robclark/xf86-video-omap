@@ -701,8 +701,8 @@ OMAPDRI2ScreenInit(ScreenPtr pScreen)
 	/* add supported non-video formats: */
 	formats[nformats++] = 24;
 	formats[nformats++] = 32;
-	formats[nformats++] = fourcc_code('R','G','B','3');
-	formats[nformats++] = fourcc_code('R','G','B','4');
+	formats[nformats++] = fourcc_code('X','R','2','4');
+	formats[nformats++] = fourcc_code('A','R','2','4');
 
 	info.formats = formats;
 	info.numFormats = nformats;
