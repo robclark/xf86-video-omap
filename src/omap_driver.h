@@ -231,7 +231,7 @@ void drmmode_adjust_frame(ScrnInfoPtr pScrn, int x, int y, int flags);
 void drmmode_remove_fb(ScrnInfoPtr pScrn);
 Bool drmmode_page_flip(DrawablePtr draw, uint32_t fb_id, void *priv);
 Bool drmmode_cursor_init(ScreenPtr pScreen);
-Bool drmmode_reallocate_scanout(ScrnInfoPtr pScrn);
+Bool drmmode_reallocate_scanout(ScrnInfoPtr pScrn, Bool redraw);
 
 
 /**

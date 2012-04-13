@@ -297,7 +297,7 @@ drmmode_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 	 */
 	if (was_rotated != (drmmode->rotated_crtcs > 0)) {
 		/* reallocate scanout buffer.. */
-		drmmode_reallocate_scanout(pScrn);
+		drmmode_reallocate_scanout(pScrn, TRUE);
 	}
 
 	/* note: this needs to be done before setting the mode, otherwise
@@ -1106,7 +1106,7 @@ drmmode_output_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int num)
 }
 
 Bool
-drmmode_reallocate_scanout(ScrnInfoPtr pScrn)
+drmmode_reallocate_scanout(ScrnInfoPtr pScrn, Bool redraw)
 {
 	OMAPPtr pOMAP = OMAPPTR(pScrn);
 	ScreenPtr pScreen = pScrn->pScreen;
@@ -1138,6 +1138,9 @@ drmmode_reallocate_scanout(ScrnInfoPtr pScrn)
 	}
 
 	if (changed) {
+		if (pScreen && pScrn->EnableDisableFBAccess && redraw)
+			pScrn->EnableDisableFBAccess(pScrn->scrnIndex, FALSE);
+
 		/* delete old scanout buffer */
 		omap_bo_del(pOMAP->scanout);
 
@@ -1165,10 +1168,12 @@ drmmode_reallocate_scanout(ScrnInfoPtr pScrn)
 			PixmapPtr rootPixmap = pScreen->GetScreenPixmap(pScreen);
 			pScreen->ModifyPixmapHeader(rootPixmap,
 					pScrn->virtualX, pScrn->virtualY,
-					pScrn->depth, pScrn->bitsPerPixel,
-					pScrn->displayWidth * (pScrn->bitsPerPixel / 8),
+					pScrn->depth, pScrn->bitsPerPixel, pitch,
 					omap_bo_map(pOMAP->scanout));
 		}
+
+		if (pScreen && pScrn->EnableDisableFBAccess && redraw)
+			pScrn->EnableDisableFBAccess(pScrn->scrnIndex, TRUE);
 	}
 
 	return TRUE;
@@ -1182,7 +1187,7 @@ drmmode_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 	pScrn->virtualX = width;
 	pScrn->virtualY = height;
 
-	if (!drmmode_reallocate_scanout(pScrn))
+	if (!drmmode_reallocate_scanout(pScrn, FALSE))
 		return FALSE;
 
 	return TRUE;
