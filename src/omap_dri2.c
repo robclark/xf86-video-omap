@@ -579,6 +579,7 @@ OMAPDRI2ScheduleSwapVid(ClientPtr client, DrawablePtr pDraw,
 	cmd->pDstBuffer = pDstBuffer;
 	cmd->func = func;
 	cmd->data = data;
+	cmd->type = DRI2_BLIT_COMPLETE;
 
 	DEBUG_MSG("%d -> %d", pSrcBuffer->attachment, pDstBuffer->attachment);
 
