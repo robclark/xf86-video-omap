@@ -26,3 +26,5 @@ depcomp
 .project
 .settings
 man/omap.4
+/m4/
+tags
