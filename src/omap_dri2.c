@@ -313,7 +313,7 @@ OMAPDRI2GetMSC(DrawablePtr pDraw, CARD64 *ust, CARD64 *msc)
 	if (ret) {
 		static int limit = 5;
 		if (limit) {
-			ERROR_MSG("get vblank counter failed: %s", strerror(errno));
+			WARNING_MSG("get vblank counter failed: %s", strerror(errno));
 			limit--;
 		}
 		return FALSE;
