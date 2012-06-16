@@ -1156,11 +1156,20 @@ drmmode_remove_fb(ScrnInfoPtr pScrn)
  * Page Flipping
  */
 
+typedef struct {
+	drmmode_ptr mode;
+	uint32_t old_fb_id;
+	void *priv;
+} drmmode_flipdata_rec, *drmmode_flipdata_ptr;
+
 static void
 page_flip_handler(int fd, unsigned int sequence, unsigned int tv_sec,
 		unsigned int tv_usec, void *user_data)
 {
-	OMAPDRI2SwapComplete(user_data);
+	drmmode_flipdata_ptr flipdata = user_data;
+	OMAPDRI2SwapComplete(flipdata->priv);
+	drmModeRmFB(flipdata->mode->fd, flipdata->old_fb_id);
+	free(flipdata);
 }
 
 static drmEventContext event_context = {
@@ -1169,13 +1178,36 @@ static drmEventContext event_context = {
 };
 
 Bool
-drmmode_page_flip(DrawablePtr draw, uint32_t fb_id, void *priv)
+drmmode_page_flip(DrawablePtr pDraw, PixmapPtr back, void *priv)
 {
-	ScrnInfoPtr scrn = xf86Screens[draw->pScreen->myNum];
-	xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(scrn);
+	ScrnInfoPtr pScrn = xf86Screens[pDraw->pScreen->myNum];
+	xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(pScrn);
 	drmmode_crtc_private_ptr crtc = config->crtc[0]->driver_private;
 	drmmode_ptr mode = crtc->drmmode;
+	drmmode_flipdata_ptr flipdata;
+	uint32_t old_fb_id;
 	int ret, i;
+
+	old_fb_id = mode->fb_id;
+	ret = drmModeAddFB(mode->fd, pDraw->width, pDraw->height,
+			pDraw->depth, pDraw->bitsPerPixel, exaGetPixmapPitch(back),
+			omap_bo_handle(OMAPPixmapBo(back)), &mode->fb_id);
+	if (ret) {
+		DEBUG_MSG("add fb failed, cannot flip: %s", strerror(errno));
+		return FALSE;
+	}
+
+	flipdata = calloc(1, sizeof(*flipdata));
+	if (!flipdata) {
+		WARNING_MSG("flip queue: data alloc failed.");
+		goto error;
+	}
+
+	flipdata->priv = priv;
+	flipdata->mode = mode;
+	flipdata->old_fb_id = old_fb_id;
+
+	DEBUG_MSG("flip: %d -> %d", mode->fb_id, old_fb_id);
 
 	/* if we can flip, we must be fullscreen.. so flip all CRTC's.. */
 	for (i = 0; i < config->num_crtc; i++) {
@@ -1185,15 +1217,19 @@ drmmode_page_flip(DrawablePtr draw, uint32_t fb_id, void *priv)
 			continue;
 
 		ret = drmModePageFlip(mode->fd, crtc->mode_crtc->crtc_id,
-				fb_id, DRM_MODE_PAGE_FLIP_EVENT, priv);
+				mode->fb_id, DRM_MODE_PAGE_FLIP_EVENT, flipdata);
 		if (ret) {
-			xf86DrvMsg(scrn->scrnIndex, X_WARNING,
-					"flip queue failed: %s\n", strerror(errno));
+			WARNING_MSG("flip queue failed: %s", strerror(errno));
 			return FALSE;
 		}
 	}
 
 	return TRUE;
+
+error:
+	drmModeRmFB(mode->fd, mode->fb_id);
+	mode->fb_id = old_fb_id;
+	return FALSE;
 }
 
 /*
