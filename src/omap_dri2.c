@@ -319,31 +319,50 @@ OMAPDRI2CreateBufferVid(DrawablePtr pDraw, unsigned int attachment,
 	OMAPDRI2BufferPtr buf;
 	PixmapPtr pPixmap;
 	int bpp, extraCount = 0, ew = width, eh = height;
+	unsigned usage_hint = 0;
 
 	DEBUG_MSG("pDraw=%p, attachment=%d, format=%08x",
 			pDraw, attachment, format);
 
-	switch(format) {
-	case fourcc_code('I','4','2','0'):
-	case fourcc_code('Y','V','1','2'):
-		extraCount++;
-		ew /= 2;
+#define MULTI_PLANAR 0
+	if (MULTI_PLANAR) {
+		switch(format) {
+		case fourcc_code('I','4','2','0'):
+		case fourcc_code('Y','V','1','2'):
+			extraCount++;
+			ew /= 2;
 		/* fallthru */
-	case fourcc_code('N','V','1','2'):
-		extraCount++;
-		eh /= 2;
-		bpp = 8;
-		break;
-	case fourcc_code('U','Y','V','Y'):
-	case fourcc_code('Y','U','Y','2'):
-		bpp = 16;
-		break;
-	default:
-		return NULL;
+		case fourcc_code('N','V','1','2'):
+			extraCount++;
+			eh /= 2;
+			bpp = 8;
+			break;
+		case fourcc_code('U','Y','V','Y'):
+		case fourcc_code('Y','U','Y','2'):
+			bpp = 16;
+			break;
+		default:
+			return NULL;
+		}
+	} else {
+		switch(format) {
+		case fourcc_code('I','4','2','0'):
+		case fourcc_code('Y','V','1','2'):
+		case fourcc_code('N','V','1','2'):
+			bpp = 8;
+			usage_hint = OMAP_CREATE_PIXMAP_420;
+			break;
+		case fourcc_code('U','Y','V','Y'):
+		case fourcc_code('Y','U','Y','2'):
+			bpp = 16;
+			break;
+		default:
+			return NULL;
+		}
 	}
 
 	/* main buffer, luma buffer in case of multi-planar.. */
-	pPixmap = pScreen->CreatePixmap(pScreen, width, height, bpp, 0);
+	pPixmap = pScreen->CreatePixmap(pScreen, width, height, bpp, usage_hint);
 
 	buf = createbuf(pDraw, pPixmap, attachment, format);
 

@@ -156,6 +156,13 @@ OMAPModifyPixmapHeader(PixmapPtr pPixmap, int width, int height,
 		pPixmap->devKind = OMAPCalculateStride(width, bitsPerPixel);
 	}
 
+	/* if this is a planar 420 YUV format, then the bpp field only
+	 * represents the Y plane.. increase the height to account for
+	 * the U and V..
+	 */
+	if (pPixmap->usage_hint & OMAP_CREATE_PIXMAP_420)
+		height += (height + 1) / 2;
+
 	size = pPixmap->devKind * height;
 
 	if ((!priv->bo) || (omap_bo_size(priv->bo) != size)) {
