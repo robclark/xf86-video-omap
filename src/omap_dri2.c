@@ -66,6 +66,92 @@ typedef struct {
 #define OMAPBUF(p)	((OMAPDRI2BufferPtr)(p))
 #define DRIBUF(p)	((DRI2BufferPtr)(&(p)->base))
 
+/* ************************************************************************* */
+
+/**
+ * We implement triple buffering a bit different than some of the other
+ * DDX drivers.  Instead of implementing it transparently, we let the
+ * client explicitly request the third buffer.  Triple buffering is a
+ * tradeoff between jitter/fps and latency, so some applications might
+ * be better off without triple buffering.
+ */
+
+#define DRI2BufferThirdLeft       (DRI2BufferBackLeft | 0x00008000)
+
+static DevPrivateKeyRec           OMAPDRI2WindowPrivateKeyRec;
+#define OMAPDRI2WindowPrivateKey  (&OMAPDRI2WindowPrivateKeyRec)
+static DevPrivateKeyRec           OMAPDRI2PixmapPrivateKeyRec;
+#define OMAPDRI2PixmapPrivateKey  (&OMAPDRI2PixmapPrivateKeyRec)
+static RESTYPE                    OMAPDRI2DrawableRes;
+
+typedef struct {
+	DrawablePtr pDraw;
+
+	/* keep track of the third buffer, if created by the client:
+	 */
+	DRI2BufferPtr pThirdBuffer;
+
+	/* in case of triple buffering, we can get another swap request
+	 * before the previous has completed, so queue up the next one:
+	 */
+	OMAPDRISwapCmd *cmd;
+
+} OMAPDRI2DrawableRec, *OMAPDRI2DrawablePtr;
+
+static int
+OMAPDRI2DrawableGone(pointer p, XID id)
+{
+	OMAPDRI2DrawablePtr pPriv = p;
+	DrawablePtr pDraw = pPriv->pDraw;
+
+	if (pDraw->type == DRAWABLE_WINDOW) {
+		dixSetPrivate(&((WindowPtr)pDraw)->devPrivates,
+				OMAPDRI2WindowPrivateKey, NULL);
+	} else {
+		dixSetPrivate(&((PixmapPtr)pDraw)->devPrivates,
+				OMAPDRI2PixmapPrivateKey, NULL);
+	}
+
+	free(pPriv);
+
+	return Success;
+}
+
+static OMAPDRI2DrawablePtr
+OMAPDRI2GetDrawable(DrawablePtr pDraw)
+{
+	OMAPDRI2DrawablePtr pPriv;
+
+	if (pDraw->type == DRAWABLE_WINDOW) {
+		pPriv = dixLookupPrivate(&((WindowPtr)pDraw)->devPrivates,
+				OMAPDRI2WindowPrivateKey);
+	} else {
+		pPriv = dixLookupPrivate(&((PixmapPtr)pDraw)->devPrivates,
+				OMAPDRI2PixmapPrivateKey);
+	}
+
+	if (!pPriv) {
+		pPriv = calloc(1, sizeof(*pPriv));
+		pPriv->pDraw = pDraw;
+
+		if (pDraw->type == DRAWABLE_WINDOW) {
+			dixSetPrivate(&((WindowPtr)pDraw)->devPrivates,
+					OMAPDRI2WindowPrivateKey, pPriv);
+		} else {
+			dixSetPrivate(&((PixmapPtr)pDraw)->devPrivates,
+					OMAPDRI2PixmapPrivateKey, pPriv);
+		}
+
+		if (!AddResource(pDraw->id, OMAPDRI2DrawableRes, pPriv)) {
+			OMAPDRI2DrawableGone(pPriv, pDraw->id);
+			pPriv = NULL;
+		}
+	}
+
+	return pPriv;
+}
+
+/* ************************************************************************* */
 
 static inline DrawablePtr
 dri2draw(DrawablePtr pDraw, DRI2BufferPtr buf)
@@ -113,6 +199,8 @@ createpix(DrawablePtr pDraw)
 	return pScreen->CreatePixmap(pScreen,
 			pDraw->width, pDraw->height, pDraw->depth, flags);
 }
+
+/* ************************************************************************* */
 
 /**
  * Create Buffer.
@@ -187,6 +275,11 @@ OMAPDRI2CreateBuffer(DrawablePtr pDraw, unsigned int attachment,
 		return NULL;
 	}
 
+	if (attachment == DRI2BufferThirdLeft) {
+		OMAPDRI2DrawablePtr pPriv = OMAPDRI2GetDrawable(pDraw);
+		pPriv->pThirdBuffer = DRIBUF(buf);
+	}
+
 	return DRIBUF(buf);
 }
 
@@ -207,6 +300,11 @@ OMAPDRI2DestroyBuffer(DrawablePtr pDraw, DRI2BufferPtr buffer)
 		return;
 
 	DEBUG_MSG("pDraw=%p, buffer=%p", pDraw, buffer);
+
+	if (buffer->attachment == DRI2BufferThirdLeft) {
+		OMAPDRI2DrawablePtr pPriv = OMAPDRI2GetDrawable(pDraw);
+		pPriv->pThirdBuffer = NULL;
+	}
 
 	pScreen->DestroyPixmap(buf->pPixmap);
 
@@ -301,6 +399,7 @@ struct _OMAPDRISwapCmd {
 	int type;
 	ClientPtr client;
 	ScreenPtr pScreen;
+
 	/* Note: store drawable ID, rather than drawable.  It's possible that
 	 * the drawable can be destroyed while we wait for page flip event:
 	 */
@@ -316,6 +415,65 @@ static const char *swap_names[] = {
 		[DRI2_BLIT_COMPLETE] = "blit",
 		[DRI2_FLIP_COMPLETE] = "flip,"
 };
+
+static void
+OMAPDRI2SwapDispatch(DrawablePtr pDraw, OMAPDRISwapCmd *cmd)
+{
+	ScreenPtr pScreen = pDraw->pScreen;
+	ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+	OMAPDRI2DrawablePtr pPriv = OMAPDRI2GetDrawable(pDraw);
+	OMAPDRI2BufferPtr src = OMAPBUF(cmd->pSrcBuffer);
+
+	/* if we can flip, do so: */
+	if (canflip(pDraw) && drmmode_page_flip(pDraw, src->pPixmap, cmd)) {
+		cmd->type = DRI2_FLIP_COMPLETE;
+	} else if (canexchange(pDraw, cmd->pSrcBuffer, cmd->pDstBuffer)) {
+		/* we can get away w/ pointer swap.. yah! */
+		cmd->type = DRI2_EXCHANGE_COMPLETE;
+	} else {
+		/* fallback to blit: */
+		BoxRec box = {
+				.x1 = 0,
+				.y1 = 0,
+				.x2 = pDraw->width,
+				.y2 = pDraw->height,
+		};
+		RegionRec region;
+		RegionInit(&region, &box, 0);
+		OMAPDRI2CopyRegion(pDraw, &region,
+				cmd->pDstBuffer, cmd->pSrcBuffer);
+		cmd->type = DRI2_BLIT_COMPLETE;
+	}
+
+	DEBUG_MSG("%s dispatched: %d -> %d", swap_names[cmd->type],
+			cmd->pSrcBuffer->attachment, cmd->pDstBuffer->attachment);
+
+	/* for flip/exchange, cycle buffers now, so no next DRI2GetBuffers
+	 * gets the new buffer names:
+	 */
+	if (cmd->type != DRI2_BLIT_COMPLETE) {
+		exchangebufs(pDraw, cmd->pSrcBuffer, cmd->pDstBuffer);
+
+		if (pPriv->pThirdBuffer) {
+			exchangebufs(pDraw, cmd->pSrcBuffer, pPriv->pThirdBuffer);
+		}
+	}
+
+	/* if we are triple buffering, send event back to client
+	 * now, rather than waiting for vblank, so client can
+	 * immediately request the new back buffer:
+	 */
+	if (pPriv->pThirdBuffer) {
+		DRI2SwapComplete(cmd->client, pDraw, 0, 0, 0, cmd->type,
+				cmd->func, cmd->data);
+	}
+
+	/* for exchange/blit, there is no page_flip event to wait for:
+	 */
+	if (cmd->type != DRI2_FLIP_COMPLETE) {
+		OMAPDRI2SwapComplete(cmd);
+	}
+}
 
 void
 OMAPDRI2SwapComplete(OMAPDRISwapCmd *cmd)
@@ -333,18 +491,23 @@ OMAPDRI2SwapComplete(OMAPDRISwapCmd *cmd)
 			M_ANY, DixWriteAccess);
 
 	if (status == Success) {
-		if (cmd->type != DRI2_BLIT_COMPLETE)
-			exchangebufs(pDraw, cmd->pSrcBuffer, cmd->pDstBuffer);
-
-		DRI2SwapComplete(cmd->client, pDraw, 0, 0, 0, cmd->type,
-				cmd->func, cmd->data);
+		OMAPDRI2DrawablePtr pPriv = OMAPDRI2GetDrawable(pDraw);
+		if (!pPriv->pThirdBuffer) {
+			DRI2SwapComplete(cmd->client, pDraw, 0, 0, 0, cmd->type,
+					cmd->func, cmd->data);
+		}
+		if (pPriv->cmd) {
+			/* dispatch queued flip: */
+			OMAPDRI2SwapDispatch(pDraw, pPriv->cmd);
+			pPriv->cmd = NULL;
+		}
 	}
 
 	/* drop extra refcnt we obtained prior to swap:
 	 */
 	OMAPDRI2DestroyBuffer(pDraw, cmd->pSrcBuffer);
 	OMAPDRI2DestroyBuffer(pDraw, cmd->pDstBuffer);
-	pOMAP->pending_flips--;
+	pOMAP->pending_swaps--;
 
 	free(cmd);
 }
@@ -370,7 +533,6 @@ OMAPDRI2ScheduleSwap(ClientPtr client, DrawablePtr pDraw,
 	ScreenPtr pScreen = pDraw->pScreen;
 	ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
 	OMAPPtr pOMAP = OMAPPTR(pScrn);
-	OMAPDRI2BufferPtr src = OMAPBUF(pSrcBuffer);
 	OMAPDRISwapCmd *cmd = calloc(1, sizeof(*cmd));
 
 	cmd->client = client;
@@ -380,38 +542,24 @@ OMAPDRI2ScheduleSwap(ClientPtr client, DrawablePtr pDraw,
 	cmd->pDstBuffer = pDstBuffer;
 	cmd->func = func;
 	cmd->data = data;
-	cmd->type = DRI2_FLIP_COMPLETE;
-
-	DEBUG_MSG("%d -> %d", pSrcBuffer->attachment, pDstBuffer->attachment);
 
 	/* obtain extra ref on buffers to avoid them going away while we await
 	 * the page flip event:
 	 */
 	OMAPDRI2ReferenceBuffer(pSrcBuffer);
 	OMAPDRI2ReferenceBuffer(pDstBuffer);
-	pOMAP->pending_flips++;
 
-	/* if we can flip, do so: */
-	if (canflip(pDraw) && drmmode_page_flip(pDraw, src->pPixmap, cmd))
-		return TRUE;
+	pOMAP->pending_swaps++;
 
-	if (canexchange(pDraw, pSrcBuffer, pDstBuffer)) {
-		/* we can get away w/ pointer swap.. yah! */
-		cmd->type = DRI2_EXCHANGE_COMPLETE;
-		OMAPDRI2SwapComplete(cmd);
+	if (pOMAP->pending_swaps > 1) {
+		/* if we already have a pending swap, then just queue this
+		 * one up:
+		 */
+		OMAPDRI2DrawablePtr pPriv = OMAPDRI2GetDrawable(pDraw);
+		assert(!pPriv->cmd);
+		pPriv->cmd = cmd;
 	} else {
-		/* fallback to blit: */
-		BoxRec box = {
-				.x1 = 0,
-				.y1 = 0,
-				.x2 = pDraw->width,
-				.y2 = pDraw->height,
-		};
-		RegionRec region;
-		RegionInit(&region, &box, 0);
-		OMAPDRI2CopyRegion(pDraw, &region, pDstBuffer, pSrcBuffer);
-		cmd->type = DRI2_BLIT_COMPLETE;
-		OMAPDRI2SwapComplete(cmd);
+		OMAPDRI2SwapDispatch(pDraw, cmd);
 	}
 
 	return TRUE;
@@ -446,7 +594,7 @@ OMAPDRI2ScreenInit(ScreenPtr pScreen)
 	ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
 	OMAPPtr pOMAP = OMAPPTR(pScrn);
 	DRI2InfoRec info = {
-			.version			= 5,
+			.version			= 6,
 			.fd 				= pOMAP->drmFD,
 			.driverName			= "omap",
 			.deviceName			= pOMAP->deviceName,
@@ -469,6 +617,17 @@ OMAPDRI2ScreenInit(ScreenPtr pScreen)
 		return FALSE;
 	}
 
+	OMAPDRI2DrawableRes = CreateNewResourceType(
+			OMAPDRI2DrawableGone, (char *)"OMAPDRI2Drawable");
+	if (!OMAPDRI2DrawableRes)
+		return FALSE;
+
+	if (!dixRegisterPrivateKey(&OMAPDRI2WindowPrivateKeyRec, PRIVATE_WINDOW, 0))
+		return FALSE;
+
+	if (!dixRegisterPrivateKey(&OMAPDRI2PixmapPrivateKeyRec, PRIVATE_PIXMAP, 0))
+		return FALSE;
+
 	return DRI2ScreenInit(pScreen, &info);
 }
 
@@ -480,7 +639,7 @@ OMAPDRI2CloseScreen(ScreenPtr pScreen)
 {
 	ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
 	OMAPPtr pOMAP = OMAPPTR(pScrn);
-	while (pOMAP->pending_flips > 0) {
+	while (pOMAP->pending_swaps > 0) {
 		DEBUG_MSG("waiting..");
 		drmmode_wait_for_event(pScrn);
 	}
