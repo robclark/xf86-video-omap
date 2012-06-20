@@ -1,1 +1,15 @@
-TBD
+Release 0.3.0 (2012-04-21)
+==========================
+First Release
+
+Release 0.4.0 (2012-06-20)
+==========================
+
+* Port to compat-api so driver will build against latest xserver
+  from git as well as past releases.
+
+* DRI2: Fix issue with flipping that would result in deleting kms
+  fb_id while it was being scanned out.
+
+* DRI2: Implement support for triple buffering.
+
