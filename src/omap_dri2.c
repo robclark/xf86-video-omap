@@ -96,6 +96,9 @@ typedef struct {
 	 */
 	OMAPDRISwapCmd *cmd;
 
+	/* pending swaps on this drawable (which might or might not be flips) */
+	int pending_swaps;
+
 } OMAPDRI2DrawableRec, *OMAPDRI2DrawablePtr;
 
 static int
@@ -426,6 +429,7 @@ OMAPDRI2SwapDispatch(DrawablePtr pDraw, OMAPDRISwapCmd *cmd)
 
 	/* if we can flip, do so: */
 	if (canflip(pDraw) && drmmode_page_flip(pDraw, src->pPixmap, cmd)) {
+		OMAPPTR(pScrn)->pending_page_flips++;
 		cmd->type = DRI2_FLIP_COMPLETE;
 	} else if (canexchange(pDraw, cmd->pSrcBuffer, cmd->pDstBuffer)) {
 		/* we can get away w/ pointer swap.. yah! */
@@ -480,12 +484,14 @@ OMAPDRI2SwapComplete(OMAPDRISwapCmd *cmd)
 {
 	ScreenPtr pScreen = cmd->pScreen;
 	ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
-	OMAPPtr pOMAP = OMAPPTR(pScrn);
 	DrawablePtr pDraw = NULL;
 	int status;
 
 	DEBUG_MSG("%s complete: %d -> %d", swap_names[cmd->type],
 			cmd->pSrcBuffer->attachment, cmd->pDstBuffer->attachment);
+
+	if (cmd->type == DRI2_FLIP_COMPLETE)
+		OMAPPTR(pScrn)->pending_page_flips--;
 
 	status = dixLookupDrawable(&pDraw, cmd->draw_id, serverClient,
 			M_ANY, DixWriteAccess);
@@ -501,13 +507,13 @@ OMAPDRI2SwapComplete(OMAPDRISwapCmd *cmd)
 			OMAPDRI2SwapDispatch(pDraw, pPriv->cmd);
 			pPriv->cmd = NULL;
 		}
+		pPriv->pending_swaps--;
 	}
 
 	/* drop extra refcnt we obtained prior to swap:
 	 */
 	OMAPDRI2DestroyBuffer(pDraw, cmd->pSrcBuffer);
 	OMAPDRI2DestroyBuffer(pDraw, cmd->pDstBuffer);
-	pOMAP->pending_swaps--;
 
 	free(cmd);
 }
@@ -532,7 +538,7 @@ OMAPDRI2ScheduleSwap(ClientPtr client, DrawablePtr pDraw,
 {
 	ScreenPtr pScreen = pDraw->pScreen;
 	ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
-	OMAPPtr pOMAP = OMAPPTR(pScrn);
+	OMAPDRI2DrawablePtr pPriv = OMAPDRI2GetDrawable(pDraw);
 	OMAPDRISwapCmd *cmd = calloc(1, sizeof(*cmd));
 
 	cmd->client = client;
@@ -549,14 +555,17 @@ OMAPDRI2ScheduleSwap(ClientPtr client, DrawablePtr pDraw,
 	OMAPDRI2ReferenceBuffer(pSrcBuffer);
 	OMAPDRI2ReferenceBuffer(pDstBuffer);
 
-	pOMAP->pending_swaps++;
+	pPriv->pending_swaps++;
 
-	if (pOMAP->pending_swaps > 1) {
+	if (pPriv->pending_swaps > 1) {
 		/* if we already have a pending swap, then just queue this
 		 * one up:
 		 */
-		OMAPDRI2DrawablePtr pPriv = OMAPDRI2GetDrawable(pDraw);
-		assert(!pPriv->cmd);
+		if (pPriv->cmd) {
+			ERROR_MSG("already pending a flip!");
+			pPriv->pending_swaps--;
+			return FALSE;
+		}
 		pPriv->cmd = cmd;
 	} else {
 		OMAPDRI2SwapDispatch(pDraw, cmd);
@@ -639,7 +648,7 @@ OMAPDRI2CloseScreen(ScreenPtr pScreen)
 {
 	ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
 	OMAPPtr pOMAP = OMAPPTR(pScrn);
-	while (pOMAP->pending_swaps > 0) {
+	while (pOMAP->pending_page_flips > 0) {
 		DEBUG_MSG("waiting..");
 		drmmode_wait_for_event(pScrn);
 	}

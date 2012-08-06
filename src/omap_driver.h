@@ -160,8 +160,8 @@ typedef struct _OMAPRec
 
 	XF86VideoAdaptorPtr textureAdaptor;
 
-	/** Swaps we are waiting for: */
-	int					pending_swaps;
+	/** Pending page flips we are waiting for: */
+	int					pending_page_flips;
 
 } OMAPRec, *OMAPPtr;
 
