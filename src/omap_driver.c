@@ -54,6 +54,10 @@ static void OMAPAdjustFrame(ADJUST_FRAME_ARGS_DECL);
 static Bool OMAPEnterVT(VT_FUNC_ARGS_DECL);
 static void OMAPLeaveVT(VT_FUNC_ARGS_DECL);
 static void OMAPFreeScreen(FREE_SCREEN_ARGS_DECL);
+#ifdef XSERVER_PLATFORM_BUS
+static Bool OMAPPlatformProbe(DriverPtr drv, int entity_num, int flags,
+		struct xf86_platform_device *dev, intptr_t match_data);
+#endif
 
 
 
@@ -74,7 +78,10 @@ _X_EXPORT DriverRec OMAP = {
 		NULL,
 #ifdef XSERVER_LIBPCIACCESS
 		NULL,
-		NULL
+		NULL,
+#endif
+#ifdef XSERVER_PLATFORM_BUS
+		OMAPPlatformProbe,
 #endif
 };
 
@@ -259,7 +266,11 @@ OMAPSetup(pointer module, pointer opts, int *errmaj, int *errmin)
 	/* This module should be loaded only once, but check to be sure: */
 	if (!setupDone) {
 		setupDone = TRUE;
+#ifdef XSERVER_PLATFORM_BUS
+		xf86AddDriver(&OMAP, module, HaveDriverFuncs);
+#else
 		xf86AddDriver(&OMAP, module, 0);
+#endif
 
 		/* The return value must be non-NULL on success even though there is no
 		 * TearDownProc.
@@ -427,6 +438,7 @@ OMAPPreInit(ScrnInfoPtr pScrn, int flags)
 	rgb defaultWeight = { 0, 0, 0 };
 	rgb defaultMask = { 0, 0, 0 };
 	Gamma defaultGamma = { 0.0, 0.0, 0.0 };
+	EntityInfoPtr pEnt;
 	uint64_t value;
 	int i;
 
@@ -449,7 +461,8 @@ OMAPPreInit(ScrnInfoPtr pScrn, int flags)
 	OMAPGetRec(pScrn);
 	pOMAP = OMAPPTR(pScrn);
 
-	pOMAP->pEntityInfo = xf86GetEntityInfo(pScrn->entityList[0]);
+	pEnt = xf86GetEntityInfo(pScrn->entityList[0]);
+	pOMAP->pEntityInfo = pEnt;
 
 	pScrn->monitor = pScrn->confScreen->monitor;
 
@@ -492,7 +505,17 @@ OMAPPreInit(ScrnInfoPtr pScrn, int flags)
 	/* Using a programmable clock: */
 	pScrn->progClock = TRUE;
 
-	/* Open a connection to the DRM, so we can communicate with the KMS code: */
+#ifdef XSERVER_PLATFORM_BUS
+	if (pEnt->location.type == BUS_PLATFORM) {
+		char *busid = xf86_get_platform_device_attrib(pEnt->location.id.plat,
+				ODEV_ATTRIB_BUSID);
+		pOMAP->drmFD = drmOpen(NULL, busid);
+		if (pOMAP->drmFD < 0)
+			goto fail;
+		pOMAP->deviceName = drmGetDeviceNameFromFd(pOMAP->drmFD);
+	}
+	else
+#endif
 	if (!OMAPOpenDRMMaster(pScrn, 0)) {
 		goto fail;
 	}
@@ -1059,3 +1082,42 @@ OMAPFreeScreen(FREE_SCREEN_ARGS_DECL)
 	TRACE_EXIT();
 }
 
+#ifdef XSERVER_PLATFORM_BUS
+static Bool
+OMAPPlatformProbe(DriverPtr drv, int entity_num, int flags,
+                   struct xf86_platform_device *dev, intptr_t match_data)
+{
+	ScrnInfoPtr pScrn = NULL;
+	Bool foundScreen = FALSE;
+	char *busid = xf86_get_platform_device_attrib(dev, ODEV_ATTRIB_BUSID);
+	int fd;
+
+	fd = drmOpen(NULL, busid);
+	if (fd != -1) {
+		pScrn = xf86AllocateScreen(drv, 0);
+		if (!pScrn) {
+			EARLY_ERROR_MSG("Cannot allocate a ScrnInfoPtr");
+			return FALSE;
+		}
+
+		xf86AddEntityToScreen(pScrn, entity_num);
+		foundScreen = TRUE;
+
+		pScrn->driverVersion = OMAP_VERSION;
+		pScrn->driverName    = (char *)OMAP_DRIVER_NAME;
+		pScrn->name          = (char *)OMAP_NAME;
+		pScrn->Probe         = OMAPProbe;
+		pScrn->PreInit       = OMAPPreInit;
+		pScrn->ScreenInit    = OMAPScreenInit;
+		pScrn->SwitchMode    = OMAPSwitchMode;
+		pScrn->AdjustFrame   = OMAPAdjustFrame;
+		pScrn->EnterVT       = OMAPEnterVT;
+		pScrn->LeaveVT       = OMAPLeaveVT;
+		pScrn->FreeScreen    = OMAPFreeScreen;
+
+		drmClose(fd);
+	}
+
+	return foundScreen;
+}
+#endif

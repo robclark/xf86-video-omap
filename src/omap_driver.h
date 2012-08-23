@@ -56,6 +56,9 @@
 #include "xf86drm.h"
 #include "drm_fourcc.h"
 #include "dri2.h"
+#ifdef XSERVER_PLATFORM_BUS
+#include "xf86platformBus.h"
+#endif
 
 #include <omap_drm.h>
 #include <omap_drmif.h>
