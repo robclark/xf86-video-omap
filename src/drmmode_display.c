@@ -1146,7 +1146,7 @@ drmmode_reallocate_scanout(ScrnInfoPtr pScrn, Bool redraw)
 
 	if (changed) {
 		if (pScreen && pScrn->EnableDisableFBAccess && redraw)
-			pScrn->EnableDisableFBAccess(pScrn->scrnIndex, FALSE);
+			pScrn->EnableDisableFBAccess(ENABLE_DISABLE_FB_ACCESS_ARGS(pScrn, FALSE));
 
 		/* delete old scanout buffer */
 		omap_bo_del(pOMAP->scanout);
@@ -1180,7 +1180,7 @@ drmmode_reallocate_scanout(ScrnInfoPtr pScrn, Bool redraw)
 		}
 
 		if (pScreen && pScrn->EnableDisableFBAccess && redraw)
-			pScrn->EnableDisableFBAccess(pScrn->scrnIndex, TRUE);
+			pScrn->EnableDisableFBAccess(ENABLE_DISABLE_FB_ACCESS_ARGS(pScrn, TRUE));
 	}
 
 	return TRUE;
