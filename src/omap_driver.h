@@ -68,6 +68,12 @@
 #include "compat-api.h"
 #include "omap_exa.h"
 
+#ifdef XORG_WAYLAND
+#  include <xf86Priv.h>
+#  include <xwayland.h>
+#else
+#  include "compat-xwayland.h"
+#endif
 
 #define OMAP_VERSION		1000	/* Apparently not used by X server */
 #define OMAP_NAME			"OMAP"	/* Name used to prefix messages */
@@ -166,6 +172,8 @@ typedef struct _OMAPRec
 
 	/** Pending page flips we are waiting for: */
 	int					pending_page_flips;
+
+	struct xwl_screen *xwl_screen;
 
 } OMAPRec, *OMAPPtr;
 

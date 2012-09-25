@@ -40,6 +40,7 @@ Bool omapDebug = 0;
  * Forward declarations:
  */
 static const OptionInfoRec *OMAPAvailableOptions(int chipid, int busid);
+static Bool OMAPDriverFunc(ScrnInfoPtr pScrn, xorgDriverFuncOp op, pointer ptr);
 static void OMAPIdentify(int flags);
 static Bool OMAPProbe(DriverPtr drv, int flags);
 static Bool OMAPPreInit(ScrnInfoPtr pScrn, int flags);
@@ -75,7 +76,7 @@ _X_EXPORT DriverRec OMAP = {
 		OMAPAvailableOptions,
 		NULL,
 		0,
-		NULL,
+		OMAPDriverFunc,
 #ifdef XSERVER_LIBPCIACCESS
 		NULL,
 		NULL,
@@ -254,6 +255,26 @@ static XF86ModuleVersionInfo OMAPVersRec =
 /** Let the XFree86 code know about the VersRec and Setup() function. */
 _X_EXPORT XF86ModuleData omapModuleData = { &OMAPVersRec, OMAPSetup, NULL };
 
+static int
+OMAPCreateWindowBuffer(struct xwl_window *xwl_window,
+		PixmapPtr pixmap)
+{
+	uint32_t name;
+	struct omap_bo *bo;
+
+	bo = OMAPPixmapBo(pixmap);
+	if (!bo || omap_bo_get_name(bo, &name))
+		return BadDrawable;
+
+	return xwl_create_window_buffer_drm(xwl_window, pixmap, name);
+}
+
+static struct xwl_driver xwl_driver = {
+		.version = 1,
+		.use_drm = 1,
+		.create_window_buffer = OMAPCreateWindowBuffer
+};
+
 
 /**
  * The first function that the XFree86 code calls, after loading this module.
@@ -266,11 +287,7 @@ OMAPSetup(pointer module, pointer opts, int *errmaj, int *errmin)
 	/* This module should be loaded only once, but check to be sure: */
 	if (!setupDone) {
 		setupDone = TRUE;
-#ifdef XSERVER_PLATFORM_BUS
 		xf86AddDriver(&OMAP, module, HaveDriverFuncs);
-#else
-		xf86AddDriver(&OMAP, module, 0);
-#endif
 
 		/* The return value must be non-NULL on success even though there is no
 		 * TearDownProc.
@@ -327,6 +344,24 @@ OMAPAvailableOptions(int chipid, int busid)
 	return OMAPOptions;
 }
 
+
+static Bool
+OMAPDriverFunc(ScrnInfoPtr pScrn, xorgDriverFuncOp op, pointer ptr)
+{
+	xorgHWFlags *flag;
+
+	switch (op) {
+	case GET_REQUIRED_HW_INTERFACES:
+		flag = (CARD32*)ptr;
+		(*flag) = 0;
+		if (xorgWayland)
+			(*flag) = HW_SKIP_CONSOLE;
+		return TRUE;
+	default:
+		/* Unknown or deprecated function */
+		return FALSE;
+	}
+}
 
 
 /**
@@ -505,18 +540,32 @@ OMAPPreInit(ScrnInfoPtr pScrn, int flags)
 	/* Using a programmable clock: */
 	pScrn->progClock = TRUE;
 
+	if (xorgWayland) {
+		pOMAP->xwl_screen = xwl_screen_create();
+
+		if (!pOMAP->xwl_screen) {
+			ERROR_MSG("Failed to initialize wayland");
+			goto fail;
+		}
+
+		if (!xwl_screen_pre_init(pScrn, pOMAP->xwl_screen, 0, &xwl_driver)) {
+			ERROR_MSG("Failed to pre-init xwayland screen");
+			xwl_screen_destroy(pOMAP->xwl_screen);
+			goto fail;
+		}
+
+		pOMAP->drmFD = xwl_screen_get_drm_fd(pOMAP->xwl_screen);
+
 #ifdef XSERVER_PLATFORM_BUS
-	if (pEnt->location.type == BUS_PLATFORM) {
+	} else if (pEnt->location.type == BUS_PLATFORM) {
 		char *busid = xf86_get_platform_device_attrib(pEnt->location.id.plat,
 				ODEV_ATTRIB_BUSID);
 		pOMAP->drmFD = drmOpen(NULL, busid);
 		if (pOMAP->drmFD < 0)
 			goto fail;
 		pOMAP->deviceName = drmGetDeviceNameFromFd(pOMAP->drmFD);
-	}
-	else
 #endif
-	if (!OMAPOpenDRMMaster(pScrn, 0)) {
+	} else if (!pOMAP->xwl_screen && !OMAPOpenDRMMaster(pScrn, 0)) {
 		goto fail;
 	}
 	DEBUG_MSG("Became DRM master.");
@@ -579,8 +628,9 @@ OMAPPreInit(ScrnInfoPtr pScrn, int flags)
 	 * PCI devices.
 	 */
 
-	/* Do initial KMS setup: */
-	if (!drmmode_pre_init(pScrn, pOMAP->drmFD, (pScrn->bitsPerPixel >> 3))) {
+	/* Do initial KMS setup (if not in wayland mode): */
+	if (!pOMAP->xwl_screen &&
+			!drmmode_pre_init(pScrn, pOMAP->drmFD, (pScrn->bitsPerPixel >> 3))) {
 		ERROR_MSG("Cannot get KMS resources");
 	} else {
 		INFO_MSG("Got KMS resources");
@@ -802,7 +852,7 @@ OMAPScreenInit(SCREEN_INIT_ARGS_DECL)
 	/* Initialize the cursor: */
 	miDCInitialize(pScreen, xf86GetPointerScreenFuncs());
 
-	if (pOMAP->HWCursor) {
+	if (pOMAP->HWCursor && !pOMAP->xwl_screen) {
 		if (!drmmode_cursor_init(pScreen)) {
 			ERROR_MSG("Hardware cursor initialization failed");
 			pOMAP->HWCursor = FALSE;
@@ -862,7 +912,8 @@ OMAPScreenInit(SCREEN_INIT_ARGS_DECL)
 	wrap(pOMAP, pScreen, CreateScreenResources, OMAPCreateScreenResources);
 	wrap(pOMAP, pScreen, BlockHandler, OMAPBlockHandler);
 
-	drmmode_screen_init(pScrn);
+	if (!pOMAP->xwl_screen)
+		drmmode_screen_init(pScrn);
 
 	TRACE_EXIT();
 	return TRUE;
@@ -896,7 +947,8 @@ OMAPCloseScreen(CLOSE_SCREEN_ARGS_DECL)
 
 	TRACE_ENTER();
 
-	drmmode_screen_fini(pScrn);
+	if (!pOMAP->xwl_screen)
+		drmmode_screen_fini(pScrn);
 
 	if (pScrn->vtSema == TRUE) {
 		OMAPLeaveVT(VT_FUNC_ARGS(0));
@@ -946,6 +998,9 @@ OMAPCreateScreenResources(ScreenPtr pScreen)
 		return FALSE;
 	swap(pOMAP, pScreen, CreateScreenResources);
 
+	if (pOMAP->xwl_screen)
+		xwl_screen_init(pOMAP->xwl_screen, pScreen);
+
 	return TRUE;
 }
 
@@ -962,6 +1017,9 @@ OMAPBlockHandler(BLOCKHANDLER_ARGS_DECL)
 	swap(pOMAP, pScreen, BlockHandler);
 
 	/* TODO OMAPVideoBlockHandler(), etc.. */
+
+	if (pOMAP->xwl_screen)
+		xwl_screen_post_damage(pOMAP->xwl_screen);
 }
 
 

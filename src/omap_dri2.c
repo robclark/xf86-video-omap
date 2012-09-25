@@ -602,6 +602,19 @@ OMAPDRI2ScheduleWaitMSC(ClientPtr client, DrawablePtr pDraw, CARD64 target_msc,
 	return FALSE;
 }
 
+static int
+OMAPDRI2AuthMagic(ScreenPtr pScreen, uint32_t magic)
+{
+	ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+	OMAPPtr pOMAP = OMAPPTR(pScrn);
+
+	if (xorgWayland)
+		return xwl_drm_authenticate(pOMAP->xwl_screen, magic);
+
+	/* Not wayland, fallback to drm */
+	return drmAuthMagic(pOMAP->drmFD, magic);
+}
+
 /**
  * The DRI2 ScreenInit() function.. register our handler fxns w/ DRI2 core
  */
@@ -621,7 +634,7 @@ OMAPDRI2ScreenInit(ScreenPtr pScreen)
 			.ScheduleSwap		= OMAPDRI2ScheduleSwap,
 			.ScheduleWaitMSC	= OMAPDRI2ScheduleWaitMSC,
 			.GetMSC				= OMAPDRI2GetMSC,
-			.AuthMagic			= drmAuthMagic,
+			.AuthMagic2			= OMAPDRI2AuthMagic,
 	};
 	int minor = 1, major = 0;
 
