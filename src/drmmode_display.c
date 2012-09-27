@@ -271,9 +271,6 @@ drmmode_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 
 	TRACE_ENTER();
 
-	/* remove old fb if it exists */
-	drmmode_remove_fb(pScrn);
-
 	/* update the count of number of rotated CRTCs.. if we have one or more
 	 * rotated outputs then we want to use a tiled buffer, but otherwise
 	 * stick with non-tiled
@@ -1145,6 +1142,9 @@ drmmode_reallocate_scanout(ScrnInfoPtr pScrn, Bool redraw)
 	}
 
 	if (changed) {
+		/* remove old fb if it exists */
+		drmmode_remove_fb(pScrn);
+
 		if (pScreen && pScrn->EnableDisableFBAccess && redraw)
 			pScrn->EnableDisableFBAccess(ENABLE_DISABLE_FB_ACCESS_ARGS(pScrn, FALSE));
 
