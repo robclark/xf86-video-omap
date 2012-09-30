@@ -217,7 +217,7 @@ OMAPTiledFlags(unsigned int bitsPerPixel)
 static Bool
 OMAPMapMem(ScrnInfoPtr pScrn)
 {
-	return drmmode_reallocate_scanout(pScrn, FALSE);
+	return drmmode_reallocate_scanout(pScrn, FALSE, NULL);
 }
 
 

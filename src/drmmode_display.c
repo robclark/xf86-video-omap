@@ -250,23 +250,95 @@ drmmode_set_rotation(xf86CrtcPtr crtc, Rotation rotation)
 }
 
 static Bool
-drmmode_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
-		Rotation rotation, int x, int y)
+drmmode_restore_crtc(xf86CrtcPtr crtc)
 {
 	ScrnInfoPtr pScrn = crtc->scrn;
 	OMAPPtr pOMAP = OMAPPTR(pScrn);
 	xf86CrtcConfigPtr   xf86_config = XF86_CRTC_CONFIG_PTR(crtc->scrn);
 	drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 	drmmode_ptr drmmode = drmmode_crtc->drmmode;
-	int saved_x, saved_y;
-	Rotation saved_rotation;
-	DisplayModeRec saved_mode;
 	uint32_t *output_ids = NULL;
 	int output_count = 0;
 	int ret = TRUE;
 	int i;
-	int fb_id;
 	drmModeModeInfo kmode;
+
+	if (drmmode->fb_id == 0) {
+		unsigned int pitch = pScrn->displayWidth * (pScrn->bitsPerPixel / 8);
+
+		DEBUG_MSG("create framebuffer: %dx%d",
+				pScrn->virtualX, pScrn->virtualY);
+
+		ret = drmModeAddFB(drmmode->fd,
+				pScrn->virtualX, pScrn->virtualY,
+				pScrn->depth, pScrn->bitsPerPixel,
+				pitch, omap_bo_handle(pOMAP->scanout),
+				&drmmode->fb_id);
+		if (ret < 0) {
+			ERROR_MSG("failed to add fb: %s", strerror(errno));
+			return FALSE;
+		}
+	}
+
+	output_ids = calloc(sizeof(uint32_t), xf86_config->num_output);
+	if (!output_ids) {
+		ERROR_MSG("allocation failed");
+		return FALSE;
+	}
+
+	for (i = 0; i < xf86_config->num_output; i++) {
+		xf86OutputPtr output = xf86_config->output[i];
+		drmmode_output_private_ptr drmmode_output;
+
+		if (output->crtc != crtc)
+			continue;
+
+		drmmode_output = output->driver_private;
+		output_ids[output_count] =
+				drmmode_output->mode_output->connector_id;
+		output_count++;
+	}
+
+	drmmode_ConvertToKMode(crtc->scrn, &kmode, &crtc->mode);
+
+	ret = drmModeSetCrtc(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id,
+			drmmode->fb_id, crtc->x, crtc->y,
+			output_ids, output_count, &kmode);
+	if (ret) {
+		ERROR_MSG("failed to set mode: %s", strerror(-ret));
+		ret = FALSE;
+	} else {
+		ret = TRUE;
+	}
+
+	/* Turn on any outputs on this crtc that may have been disabled: */
+	for (i = 0; i < xf86_config->num_output; i++) {
+		xf86OutputPtr output = xf86_config->output[i];
+
+		if (output->crtc != crtc)
+			continue;
+
+		drmmode_output_dpms(output, DPMSModeOn);
+	}
+
+	if (output_ids) {
+		free(output_ids);
+	}
+
+	return ret;
+}
+
+static Bool
+drmmode_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
+		Rotation rotation, int x, int y)
+{
+	ScrnInfoPtr pScrn = crtc->scrn;
+	drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+	drmmode_ptr drmmode = drmmode_crtc->drmmode;
+	int saved_x, saved_y;
+	Rotation saved_rotation;
+	DisplayModeRec saved_mode;
+	int ret = TRUE;
 	Bool was_rotated = drmmode->rotated_crtcs > 0;
 
 	TRACE_ENTER();
@@ -294,32 +366,16 @@ drmmode_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 	 */
 	if (was_rotated != (drmmode->rotated_crtcs > 0)) {
 		/* reallocate scanout buffer.. */
-		drmmode_reallocate_scanout(pScrn, TRUE);
+		drmmode_reallocate_scanout(pScrn, TRUE, crtc);
 	}
 
 	/* note: this needs to be done before setting the mode, otherwise
 	 * drm core will reject connecting the fb to crtc due to mismatched
 	 * dimensions:
 	 */
-	if (!drmmode_set_rotation(crtc, rotation))
-		goto done;
-
-	if (drmmode->fb_id == 0) {
-		unsigned int pitch = pScrn->displayWidth * (pScrn->bitsPerPixel / 8);
-
-		DEBUG_MSG("create framebuffer: %dx%d",
-				pScrn->virtualX, pScrn->virtualY);
-
-		ret = drmModeAddFB(drmmode->fd,
-				pScrn->virtualX, pScrn->virtualY,
-				pScrn->depth, pScrn->bitsPerPixel,
-				pitch, omap_bo_handle(pOMAP->scanout),
-				&drmmode->fb_id);
-		if (ret < 0) {
-			// Fixme - improve this error message:
-			ErrorF("failed to add fb\n");
-			return FALSE;
-		}
+	if (!drmmode_set_rotation(crtc, rotation)) {
+		ERROR_MSG("could not set rotation");
+		return FALSE;
 	}
 
 	/* Save the current mode in case there's a problem: */
@@ -334,65 +390,8 @@ drmmode_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 	crtc->y = y;
 	crtc->rotation = rotation;
 
-	output_ids = calloc(sizeof(uint32_t), xf86_config->num_output);
-	if (!output_ids) {
-		// Fixme - have an error message?
-		ret = FALSE;
-		goto done;
-	}
+	ret = drmmode_restore_crtc(crtc);
 
-	for (i = 0; i < xf86_config->num_output; i++) {
-		xf86OutputPtr output = xf86_config->output[i];
-		drmmode_output_private_ptr drmmode_output;
-
-		if (output->crtc != crtc)
-			continue;
-
-		drmmode_output = output->driver_private;
-		output_ids[output_count] =
-				drmmode_output->mode_output->connector_id;
-		output_count++;
-	}
-
-	// Fixme - Intel puts this function here, and Nouveau puts it at the end
-	// of this function -> determine what's best for TI'S OMAP4:
-	crtc->funcs->gamma_set(crtc, crtc->gamma_red, crtc->gamma_green,
-			crtc->gamma_blue, crtc->gamma_size);
-
-	drmmode_ConvertToKMode(crtc->scrn, &kmode, mode);
-
-	fb_id = drmmode->fb_id;
-
-	ret = drmModeSetCrtc(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id,
-			fb_id, x, y, output_ids, output_count, &kmode);
-	if (ret) {
-		xf86DrvMsg(crtc->scrn->scrnIndex, X_ERROR,
-				"failed to set mode: %s\n", strerror(-ret));
-	} else {
-		ret = TRUE;
-	}
-
-	// FIXME - DO WE NEED TO CALL TO THE PVR EXA/DRI2 CODE TO UPDATE THEM???
-
-	/* Turn on any outputs on this crtc that may have been disabled: */
-	for (i = 0; i < xf86_config->num_output; i++) {
-		xf86OutputPtr output = xf86_config->output[i];
-
-		if (output->crtc != crtc)
-			continue;
-
-		drmmode_output_dpms(output, DPMSModeOn);
-	}
-
-	// TODO: only call this if we are not using sw cursor.. ie. bad to call this
-	// if we haven't called xf86InitCursor()!!
-	//	if (pScrn->pScreen)
-	//		xf86_reload_cursors(pScrn->pScreen);
-
-done:
-	if (output_ids) {
-		free(output_ids);
-	}
 	if (!ret) {
 		/* If there was a problem, restore the old mode: */
 		crtc->x = saved_x;
@@ -1111,37 +1110,26 @@ drmmode_is_rotated(ScrnInfoPtr pScrn)
 }
 
 Bool
-drmmode_reallocate_scanout(ScrnInfoPtr pScrn, Bool redraw)
+drmmode_reallocate_scanout(ScrnInfoPtr pScrn, Bool redraw, xf86CrtcPtr crtc)
 {
 	OMAPPtr pOMAP = OMAPPTR(pScrn);
 	ScreenPtr pScreen = pScrn->pScreen;
-	Bool changed = FALSE;
-	uint32_t flags = OMAP_BO_SCANOUT | OMAP_BO_WC;
 	int width = pScrn->virtualX;
 	int height = pScrn->virtualY;
-	unsigned int pitch;
 	Bool rotate = drmmode_is_rotated(pScrn);
+	unsigned int pitch;
 
 	if (rotate) {
-		/* if we are using tiled buffers, we really should check if
-		 * width/height has changed, rather than size.. for now, just
-		 * always re-alloc:
-		 */
-		changed = TRUE;
 		pitch = OMAPCalculateTiledStride(width, pScrn->bitsPerPixel);
 	} else {
 		pitch = OMAPCalculateStride(width, pScrn->bitsPerPixel);
 	}
 
-	if (pOMAP->scanout) {
-		if ((pitch * height) != omap_bo_size(pOMAP->scanout)) {
-			changed = TRUE;
-		}
-	} else {
-		changed = TRUE;
-	}
+	if ((width != pOMAP->scanout_w) ||
+			(height != pOMAP->scanout_h) ||
+			(rotate != pOMAP->scanout_rotate)) {
+		uint32_t flags = OMAP_BO_SCANOUT | OMAP_BO_WC;
 
-	if (changed) {
 		/* remove old fb if it exists */
 		drmmode_remove_fb(pScrn);
 
@@ -1169,6 +1157,10 @@ drmmode_reallocate_scanout(ScrnInfoPtr pScrn, Bool redraw)
 			return FALSE;
 		}
 
+		pOMAP->scanout_w = width;
+		pOMAP->scanout_h = height;
+		pOMAP->scanout_rotate = rotate;
+
 		pScrn->displayWidth = pitch / (pScrn->bitsPerPixel / 8);
 
 		if (pScreen && pScreen->ModifyPixmapHeader) {
@@ -1181,6 +1173,35 @@ drmmode_reallocate_scanout(ScrnInfoPtr pScrn, Bool redraw)
 
 		if (pScreen && pScrn->EnableDisableFBAccess && redraw)
 			pScrn->EnableDisableFBAccess(ENABLE_DISABLE_FB_ACCESS_ARGS(pScrn, TRUE));
+
+		/* if reallocation triggered by a mode-set, we need to reconfigure any
+		 * other crtc's which have just been torn down by destroying the old fb:
+		 */
+		if (crtc) {
+			xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(pScrn);
+			int i;
+			DEBUG_MSG("restoring CRTCs");
+			for (i = 0; i < config->num_crtc; i++) {
+				if (config->crtc[i] != crtc) {
+					int ret;
+					DEBUG_MSG("restore CRTC %d", i);
+					ret = drmmode_restore_crtc(config->crtc[i]);
+					if (!ret) {
+						ERROR_MSG("failed to reconfig crtc %d", i);
+						/* hmm, I guess just keep trying the rest? */
+					}
+				}
+			}
+		}
+	} else {
+
+		if (pScreen && pScreen->ModifyPixmapHeader) {
+			PixmapPtr rootPixmap = pScreen->GetScreenPixmap(pScreen);
+			pScreen->ModifyPixmapHeader(rootPixmap,
+					pScrn->virtualX, pScrn->virtualY,
+					pScrn->depth, pScrn->bitsPerPixel, pitch,
+					omap_bo_map(pOMAP->scanout));
+		}
 	}
 
 	return TRUE;
@@ -1194,7 +1215,7 @@ drmmode_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 	pScrn->virtualX = width;
 	pScrn->virtualY = height;
 
-	if (!drmmode_reallocate_scanout(pScrn, FALSE))
+	if (!drmmode_reallocate_scanout(pScrn, FALSE, NULL))
 		return FALSE;
 
 	return TRUE;

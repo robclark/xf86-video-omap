@@ -150,6 +150,8 @@ typedef struct _OMAPRec
 
 	/** Scan-out buffer. */
 	struct omap_bo		*scanout;
+	int					scanout_w, scanout_h;
+	Bool				scanout_rotate;
 
 	/** Pointer to the options for this screen. */
 	OptionInfoPtr		pOptionInfo;
@@ -240,7 +242,8 @@ Bool drmmode_page_flip(DrawablePtr pDraw, PixmapPtr back, void *priv);
 void drmmode_wait_for_event(ScrnInfoPtr pScrn);
 Bool drmmode_cursor_init(ScreenPtr pScreen);
 Bool drmmode_is_rotated(ScrnInfoPtr pScrn);
-Bool drmmode_reallocate_scanout(ScrnInfoPtr pScrn, Bool redraw);
+Bool drmmode_reallocate_scanout(ScrnInfoPtr pScrn, Bool redraw,
+		xf86CrtcPtr crtc);
 
 
 /**
