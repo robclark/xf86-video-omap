@@ -793,7 +793,6 @@ OMAPScreenInit(SCREEN_INIT_ARGS_DECL)
 	OMAPAccelInit(pScreen);
 
 	/* Initialize backing store: */
-	miInitializeBackingStore(pScreen);
 	xf86SetBackingStore(pScreen);
 
 	/* Cause the cursor position to be updated by the mouse signal handler: */
