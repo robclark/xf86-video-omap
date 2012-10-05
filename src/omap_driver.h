@@ -38,12 +38,8 @@
  * (i.e. so we can use fbdevHW, SW cursor, etc):
  * XXX - figure out what can be removed..
  */
-#include "mipointer.h"
-#include "mibstore.h"
 #include "micmap.h"
-#include "colormapst.h"
 #include "xf86cmap.h"
-#include "shadow.h"
 /* for visuals */
 #include "fb.h"
 #if GET_ABI_MAJOR(ABI_VIDEODRV_VERSION) < 6
