@@ -13,3 +13,15 @@ Release 0.4.0 (2012-06-20)
 
 * DRI2: Implement support for triple buffering.
 
+Release 0.4.1 (2012-10-06)
+==========================
+
+* xrandr rotation support.
+
+* Support for PlatformProbe for latest xserver.
+
+* DRI2: fix issue w/ flipping multiple drawables.
+
+* Various other fixes, including updates to build with latest
+  xserver.
+
