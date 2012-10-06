@@ -228,6 +228,7 @@ OMAPUnmapMem(ScrnInfoPtr pScrn)
 	drmmode_remove_fb(pScrn);
 	omap_bo_del(pOMAP->scanout);
 	pOMAP->scanout = NULL;
+	pOMAP->scanout_w = pOMAP->scanout_h = 0;
 	return TRUE;
 }
 
