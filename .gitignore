@@ -2,6 +2,8 @@ aclocal.m4
 autom4te.cache
 Makefile.in
 Makefile
+INSTALL
+ChangeLog
 .deps
 .libs
 *.o
@@ -9,6 +11,8 @@ Makefile
 *.la
 libtool
 *.pc
+*.tar.gz
+*.tar.bz2
 config.log
 config.status
 config.guess
