@@ -25,3 +25,9 @@ Release 0.4.1 (2012-10-06)
 * Various other fixes, including updates to build with latest
   xserver.
 
+Release 0.4.2 (2012-10-15)
+==========================
+
+* fix 'make dist' issue that would result in distribution tarballs
+  missing the header files
+
