@@ -66,6 +66,8 @@ typedef struct {
 #define OMAPBUF(p)	((OMAPDRI2BufferPtr)(p))
 #define DRIBUF(p)	((DRI2BufferPtr)(&(p)->base))
 
+static void OMAPDRI2DestroyBuffer(DrawablePtr pDraw, DRI2BufferPtr buffer);
+
 /* ************************************************************************* */
 
 /**
@@ -279,7 +281,7 @@ OMAPDRI2CreateBuffer(DrawablePtr pDraw, unsigned int attachment,
 	ret = omap_bo_get_name(bo, &DRIBUF(buf)->name);
 	if (ret) {
 		ERROR_MSG("could not get buffer name: %d", ret);
-		/* TODO cleanup */
+		OMAPDRI2DestroyBuffer(pDraw, DRIBUF(buf));
 		return NULL;
 	}
 
@@ -454,6 +456,7 @@ OMAPDRI2SwapDispatch(DrawablePtr pDraw, OMAPDRISwapCmd *cmd)
 		RegionInit(&region, &box, 0);
 		OMAPDRI2CopyRegion(pDraw, &region,
 				cmd->pDstBuffer, cmd->pSrcBuffer);
+		RegionUninit(&region);
 		cmd->type = DRI2_BLIT_COMPLETE;
 	}
 
