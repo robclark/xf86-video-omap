@@ -366,24 +366,24 @@ OMAPDRI2CreateBufferVid(DrawablePtr pDraw, unsigned int attachment,
 
 	buf = createbuf(pDraw, pPixmap, attachment, format);
 
-	if (extraCount > 0) {
+	if (buf && (extraCount > 0)) {
 		int i, ret;
 
 		buf->extraPix = malloc(extraCount * sizeof(buf->extraPix[0]));
 		buf->extraNames = malloc(extraCount * sizeof(buf->extraNames[0]));
 		buf->extraPitches = malloc(extraCount * sizeof(buf->extraPitches[0]));
-		buf->extraCount = extraCount;
 
 		for (i = 0; i < extraCount; i++) {
 			PixmapPtr p = pScreen->CreatePixmap(pScreen, ew, eh, bpp, 0);
 
 			buf->extraPix[i] = p;
 			buf->extraPitches[i] = exaGetPixmapPitch(p);
+			buf->extraCount++;
 
 			ret = omap_bo_get_name(OMAPPixmapBo(p), &buf->extraNames[i]);
 			if (ret) {
 				ERROR_MSG("could not get buffer name: %d", ret);
-				/* TODO: cleanup.. */
+				OMAPDRI2DestroyBuffer(pDraw, DRIBUF(buf));
 				return NULL;
 			}
 		}
@@ -698,6 +698,7 @@ OMAPDRI2ScheduleSwap(ClientPtr client, DrawablePtr pDraw,
 		if (pPriv->cmd) {
 			ERROR_MSG("already pending a flip!");
 			pPriv->pending_swaps--;
+			free(cmd);
 			return FALSE;
 		}
 		pPriv->cmd = cmd;
@@ -784,17 +785,18 @@ OMAPDRI2ScheduleSwapVid(ClientPtr client, DrawablePtr pDraw,
 
 	DEBUG_MSG("%d -> %d", pSrcBuffer->attachment, pDstBuffer->attachment);
 
+	pGC = GetScratchGC(pDraw->depth, pScreen);
+	if (!pGC) {
+		free(cmd);
+		return FALSE;
+	}
+
 	/* obtain extra ref on buffers to avoid them going away while we await
 	 * the page flip event:
 	 */
 	OMAPDRI2ReferenceBuffer(pSrcBuffer);
 	OMAPDRI2ReferenceBuffer(pDstBuffer);
 	pPriv->pending_swaps++;
-
-	pGC = GetScratchGC(pDraw->depth, pScreen);
-	if (!pGC) {
-		return FALSE;
-	}
 
 	pCopyClip = RegionCreate(&dstbox, 1);
 	(*pGC->funcs->ChangeClip) (pGC, CT_REGION, pCopyClip, 0);
@@ -807,6 +809,7 @@ OMAPDRI2ScheduleSwapVid(ClientPtr client, DrawablePtr pDraw,
 				osd, &osdbox, dri2draw(pDraw, pDstBuffer), &dstbox,
 				OMAPDRI2PutTextureImage, cmd, pCopyClip) == Success) {
 			OMAPDRI2SwapComplete(cmd);
+			FreeScratchGC(pGC);
 			return TRUE;
 		}
 	}
@@ -820,6 +823,7 @@ OMAPDRI2ScheduleSwapVid(ClientPtr client, DrawablePtr pDraw,
 	OMAPDRI2DestroyBuffer(pDraw, cmd->pSrcBuffer);
 	OMAPDRI2DestroyBuffer(pDraw, cmd->pDstBuffer);
 	pPriv->pending_swaps--;
+	FreeScratchGC(pGC);
 
 	return FALSE;
 }
