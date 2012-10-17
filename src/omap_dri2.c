@@ -764,8 +764,10 @@ OMAPDRI2ScheduleSwapVid(ClientPtr client, DrawablePtr pDraw,
 	OMAPDRI2DrawablePtr pPriv = OMAPDRI2GetDrawable(pDraw);
 	OMAPDRISwapCmd *cmd = calloc(1, sizeof(*cmd));
 	OMAPPtr pOMAP = OMAPPTR(pScrn);
-	RegionPtr pCopyClip;
+	RegionRec WinRegion;
+	RegionRec ClipRegion;
 	GCPtr pGC;
+	Bool ret = FALSE;
 	BoxRec dstbox = {
 			.x1 = pDraw->x, .y1 = pDraw->y,
 			.x2 = pDraw->x + pDraw->width, .y2 = pDraw->y + pDraw->height
@@ -798,19 +800,20 @@ OMAPDRI2ScheduleSwapVid(ClientPtr client, DrawablePtr pDraw,
 	OMAPDRI2ReferenceBuffer(pDstBuffer);
 	pPriv->pending_swaps++;
 
-	pCopyClip = RegionCreate(&dstbox, 1);
-	(*pGC->funcs->ChangeClip) (pGC, CT_REGION, pCopyClip, 0);
 	ValidateGC(pDraw, pGC);
+	RegionInit(&WinRegion, &dstbox, 1);
+	RegionNull(&ClipRegion);
+	RegionIntersect(&ClipRegion, &WinRegion, pGC->pCompositeClip);
 
 	/* someday, support overlay too.. */
 	if (has_video(pOMAP)) {
 		cmd->type = DRI2_BLIT_COMPLETE;
 		if (OMAPVidCopyArea(dri2draw(pDraw, pSrcBuffer), pSrcBox,
 				osd, &osdbox, dri2draw(pDraw, pDstBuffer), &dstbox,
-				OMAPDRI2PutTextureImage, cmd, pCopyClip) == Success) {
+				OMAPDRI2PutTextureImage, cmd, &ClipRegion) == Success) {
 			OMAPDRI2SwapComplete(cmd);
-			FreeScratchGC(pGC);
-			return TRUE;
+			ret = TRUE;
+			goto out;
 		}
 	}
 
@@ -823,9 +826,13 @@ OMAPDRI2ScheduleSwapVid(ClientPtr client, DrawablePtr pDraw,
 	OMAPDRI2DestroyBuffer(pDraw, cmd->pSrcBuffer);
 	OMAPDRI2DestroyBuffer(pDraw, cmd->pDstBuffer);
 	pPriv->pending_swaps--;
+
+out:
+	RegionUninit(&WinRegion);
+	RegionUninit(&ClipRegion);
 	FreeScratchGC(pGC);
 
-	return FALSE;
+	return ret;
 }
 
 /**
