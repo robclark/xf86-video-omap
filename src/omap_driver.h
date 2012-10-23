@@ -149,6 +149,9 @@ typedef struct _OMAPRec
 	int					scanout_w, scanout_h;
 	Bool				scanout_rotate;
 
+	/** Does kernel support rotation? */
+	Bool				rotation_supported;
+
 	/** Pointer to the options for this screen. */
 	OptionInfoPtr		pOptionInfo;
 
@@ -187,8 +190,7 @@ static inline Bool has_dmm(OMAPPtr pOMAP)
 static inline Bool has_rotation(OMAPPtr pOMAP)
 {
 #if XF86_CRTC_VERSION >= 4
-	// TODO .. should somehow check if driver has rotation property..
-	return has_dmm(pOMAP);
+	return has_dmm(pOMAP) && pOMAP->rotation_supported;
 #else
 	return FALSE;
 #endif

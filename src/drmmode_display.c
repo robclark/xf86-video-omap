@@ -225,9 +225,11 @@ drmmode_set_rotation(xf86CrtcPtr crtc, Rotation rotation)
 {
 #if XF86_CRTC_VERSION >= 4
 	ScrnInfoPtr pScrn = crtc->scrn;
+	OMAPPtr pOMAP = OMAPPTR(pScrn);
 	drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
 
-	if (!(rotation & ~SUPPORTED_ROTATIONS)) {
+	if (has_rotation(pOMAP) &&
+			!(rotation & ~SUPPORTED_ROTATIONS)) {
 		int ret;
 
 		ret = drmModeObjectSetProperty(drmmode_crtc->drmmode->fd,
@@ -616,6 +618,7 @@ static const xf86CrtcFuncsRec drmmode_crtc_funcs = {
 static void
 drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int num)
 {
+	OMAPPtr pOMAP = OMAPPTR(pScrn);
 	drmModeObjectPropertiesPtr props;
 	xf86CrtcPtr crtc;
 	drmmode_crtc_private_ptr drmmode_crtc;
@@ -631,6 +634,7 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int num)
 			drmmode->mode_res->crtcs[num]);
 	drmmode_crtc->drmmode = drmmode;
 	drmmode_crtc->rotation = RR_Rotate_0;
+	drmmode_crtc->prop_rotation = 0;
 
 	/* find properties that we care about: */
 	props = drmModeObjectGetProperties(drmmode->fd,
@@ -642,6 +646,7 @@ drmmode_crtc_init(ScrnInfoPtr pScrn, drmmode_ptr drmmode, int num)
 			prop = drmModeGetProperty(drmmode->fd, props->props[i]);
 			if (!strcmp(prop->name, "rotation")) {
 				drmmode_crtc->prop_rotation = prop->prop_id;
+				pOMAP->rotation_supported = TRUE;
 			}
 			drmModeFreeProperty(prop);
 		}
