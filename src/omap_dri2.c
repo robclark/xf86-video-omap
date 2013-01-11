@@ -515,8 +515,9 @@ OMAPDRI2SwapComplete(OMAPDRISwapCmd *cmd)
 		}
 		if (pPriv->cmd) {
 			/* dispatch queued flip: */
-			OMAPDRI2SwapDispatch(pDraw, pPriv->cmd);
+			OMAPDRISwapCmd *cmd = pPriv->cmd;
 			pPriv->cmd = NULL;
+			OMAPDRI2SwapDispatch(pDraw, cmd);
 		}
 		pPriv->pending_swaps--;
 	}
