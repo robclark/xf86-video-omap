@@ -31,3 +31,14 @@ Release 0.4.2 (2012-10-15)
 * fix 'make dist' issue that would result in distribution tarballs
   missing the header files
 
+Release 0.4.3 (2012-01-11)
+==========================
+
+* DRI2: Fix some potential leaks
+
+* Fix modesetting issue on kernels prior to rotation support
+
+* Remove unnecessary DRI1 check in configure.ac
+
+* DRI2: Fix potential triple-buffer loop in SwapComplete
+
